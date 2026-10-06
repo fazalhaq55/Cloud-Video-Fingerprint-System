@@ -1,7 +1,7 @@
 # Cloud-Based Video Fingerprint Collection System
 
 A proof-of-concept **Edge-to-Cloud dashcam integrity system** for an insurance scenario.
-A driver's phone records the road and sends a small fingerprint of one frame per second to the cloud.
+A driver's dashcam records the road and sends a small fingerprint of one frame per second to the cloud.
 After an accident, the insurer uploads the video the driver submitted, and the system tells whether it was modified
 (blurred, covered by a sticker, cut, or replaced) by comparing it with the fingerprints recorded while driving.
 
