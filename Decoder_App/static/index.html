@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Insurance Verification Portal</title>
+<style>
+:root{--bg-color:#f3f4f6;--card-bg:#fff;--text-main:#1f2937;--text-muted:#6b7280;--primary:#4f46e5;--primary-hover:#4338ca;--success:#10b981;--danger:#ef4444;--border:#e5e7eb}
+body{font-family:-apple-system,sans-serif;background:var(--bg-color);color:var(--text-main);margin:0;padding:40px 20px}
+.dashboard-container{max-width:1000px;margin:auto;display:flex;flex-direction:column;gap:24px}
+.header{display:flex;justify-content:space-between;align-items:center;gap:15px}
+.header h1{margin:0;font-size:1.5rem}
+.badge{background:#dbeafe;color:#1e40af;padding:4px 12px;border-radius:999px;font-size:.85rem;font-weight:600}
+.card{background:var(--card-bg);padding:24px;border-radius:12px;border:1px solid var(--border);box-shadow:0 1px 3px rgba(0,0,0,.05)}
+h3{margin-top:0;font-size:1.1rem;margin-bottom:16px}
+.search-bar,.upload-row{display:flex;gap:12px;flex-wrap:wrap}
+input[type=text],input[type=file],select{flex:1;min-width:180px;padding:12px 16px;border:1px solid var(--border);border-radius:8px;font-size:.95rem;background:#fff}
+button{padding:12px 24px;font-size:.95rem;border:none;border-radius:8px;cursor:pointer;font-weight:600;color:#fff}
+button:disabled{opacity:.7;cursor:not-allowed}
+.btn-primary{background:var(--primary)}.btn-primary:hover{background:var(--primary-hover)}
+.btn-danger{background:var(--danger)}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
+.stat-box{padding:20px;border-radius:10px;border:1px solid var(--border);background:#f9fafb}
+.stat-value{font-size:2rem;font-weight:700;margin-bottom:4px}
+.stat-label{font-size:.85rem;color:var(--text-muted);font-weight:500;text-transform:uppercase}
+.val-success{color:var(--success)}.val-danger{color:var(--danger)}
+.terminal{background:#111827;color:#e5e7eb;padding:16px;min-height:180px;max-height:320px;overflow-y:auto;font-family:Monaco,monospace;font-size:.85rem;border-radius:8px;line-height:1.5}
+.term-error{color:#f87171}.term-info{color:#60a5fa}.term-success{color:#34d399}.term-time{color:#6b7280;margin-right:8px}
+.result-box{display:none;padding:16px;border-radius:8px;margin-top:16px;border:1px solid var(--border)}
+.result-pass{background:#ecfdf5;border-color:#a7f3d0}.result-fail{background:#fef2f2;border-color:#fecaca}
+.result-title{font-size:1.2rem;font-weight:700;margin-bottom:8px}
+table{width:100%;border-collapse:collapse;margin-top:16px;font-size:.88rem}
+th,td{padding:9px;border-bottom:1px solid var(--border);text-align:left}
+th{background:#f9fafb}
+code{background:#eef2ff;padding:2px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="dashboard-container">
+<div class="header"><h1>Dashcam Integrity Portal</h1><span class="badge">Insurance Admin Workspace</span></div>
+
+<div class="card">
+  <h3>Retrieve Incident Data</h3>
+  <div class="search-bar">
+    <input type="text" id="driver-input" placeholder="Enter Driver ID">
+    <button class="btn-primary" onclick="auditDriver()">Fetch Cloud Records</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Verify Submitted Evidence</h3>
+  <p>Upload the <code>.webm</code> dashcam video. The decoder plays it, reads each frame's index barcode, recomputes the frame's content signature and compares it with the trusted cloud record.</p>
+  <div class="upload-row">
+    <input type="file" id="video-file" accept="video/webm,video/mp4">
+    <select id="sensitivity"><option value="strict">Sensitivity: strict</option><option value="normal" selected>Sensitivity: normal</option><option value="lenient">Sensitivity: lenient</option></select>
+    <select id="speed"><option value="1" selected>Playback 1x (most accurate)</option><option value="0.5">Playback 0.5x (slowest, safest)</option><option value="2">Playback 2x</option></select>
+    <button id="verify-btn" class="btn-primary" onclick="verifyVideo()">Verify Integrity</button>
+  </div>
+  <div id="result-box" class="result-box">
+    <div id="result-title" class="result-title"></div>
+    <div id="result-summary"></div>
+    <div id="mismatch-table-container"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Cryptographic Analysis Report</h3>
+  <div class="stats-grid">
+    <div class="stat-box"><div id="stat-total" class="stat-value">0</div><div class="stat-label">Trusted Frames</div></div>
+    <div class="stat-box"><div id="stat-valid" class="stat-value val-success">0</div><div class="stat-label">Matching Frames</div></div>
+    <div class="stat-box"><div id="stat-corrupt" class="stat-value">0</div><div class="stat-label">Invalid / Missing</div></div>
+    <div class="stat-box"><div id="stat-score" class="stat-value val-success">0%</div><div class="stat-label">Reliability Score</div></div>
+  </div>
+</div>
+
+<div class="card" style="padding:0;overflow:hidden">
+  <div style="padding:16px 24px;border-bottom:1px solid #e5e7eb"><h3 style="margin:0">System Audit Logs</h3></div>
+  <div id="log-box" class="terminal"><span class="term-time">[System]</span> Ready and waiting for query...</div>
+</div>
+
+<div class="card" style="border-color:#fca5a5;background:#fef2f2">
+  <h3 style="color:#ef4444">Data Retention Management</h3>
+  <p style="color:#991b1b;font-size:.9rem">Delete cryptographic records older than two hours.</p>
+  <button class="btn-danger" onclick="cleanupData()">Purge Expired Data</button>
+</div>
+</div>
+
+<script>
+// ---- Fingerprint parameters: MUST be identical in the encoder ----
+const STRIP = 0.06, BITS = 24, GRID = 8, SW = 320, SH = 160;
+
+const logBox = document.getElementById('log-box');
+const small = Object.assign(document.createElement('canvas'), { width: SW, height: SH }).getContext('2d', { willReadFrequently: true });
+small.imageSmoothingQuality = 'high';
+const hex2 = n => n.toString(16).padStart(2, '0');
+const $ = id => document.getElementById(id);
+
+function escapeHtml(v) { return String(v).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c])); }
+function logMsg(message, type = 'normal') {
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const cls = { error: 'term-error', info: 'term-info', success: 'term-success' }[type] || '';
+  logBox.innerHTML += `<div><span class="term-time">[${time}]</span><span class="${cls}">${escapeHtml(message)}</span></div>`;
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function crc8(bytes) {
+  let c = 0;
+  for (const b of bytes) { c ^= b; for (let i = 0; i < 8; i++) c = (c & 0x80) ? ((c << 1) ^ 0x07) & 0xFF : (c << 1) & 0xFF; }
+  return c;
+}
+
+// Reads the 24-block barcode (averaging the centre of each block); returns the frame index or null if the CRC fails.
+function readIndex(ctx, w, h) {
+  const sh = Math.round(h * STRIP), d = ctx.getImageData(0, 0, w, sh).data, bw = w / BITS;
+  const y0 = Math.floor(sh * 0.25), y1 = Math.floor(sh * 0.75);
+  let bits = '';
+  for (let i = 0; i < BITS; i++) {
+    const x0 = Math.floor(i * bw + bw * 0.25), x1 = Math.floor(i * bw + bw * 0.75);
+    let s = 0, n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { s += d[(y * w + x) * 4 + 1]; n++; }
+    bits += s / n > 127 ? '1' : '0';
+  }
+  const hi = parseInt(bits.slice(0, 8), 2), lo = parseInt(bits.slice(8, 16), 2), crc = parseInt(bits.slice(16), 2);
+  if (crc8([hi, lo]) !== crc) return null;
+  return hi * 256 + lo || null;
+}
+
+// Same algorithm as the encoder: per 8x8 block, mean luminance + edge detail, barcode strip excluded.
+function computeSignature(src) {
+  const w = src.width, h = src.height, top = Math.round(h * STRIP);
+  small.drawImage(src, 0, top, w, h - top, 0, 0, SW, SH);
+  const d = small.getImageData(0, 0, SW, SH).data, Y = new Float32Array(SW * SH);
+  for (let i = 0; i < SW * SH; i++) Y[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  const cw = SW / GRID, ch = SH / GRID;
+  let out = '';
+  for (let gy = 0; gy < GRID; gy++) for (let gx = 0; gx < GRID; gx++) {
+    let s = 0, g = 0, n = 0;
+    for (let y = gy * ch; y < (gy + 1) * ch; y++) for (let x = gx * cw; x < (gx + 1) * cw; x++) {
+      const v = Y[y * SW + x]; s += v;
+      if (x < SW - 1 && y < SH - 1) { g += Math.abs(Y[y * SW + x + 1] - v) + Math.abs(Y[(y + 1) * SW + x] - v); n++; }
+    }
+    out += hex2(Math.round(s / (cw * ch))) + hex2(Math.min(255, Math.round(g / n * 8)));
+  }
+  return out;
+}
+
+// Plays the video (no seeking: MediaRecorder .webm files have no duration and seek imprecisely) and fingerprints the
+// first K frames that carry each index. The comparison uses the best match, so being a few frames late still passes,
+// while an edit that changes every frame of that second cannot.
+const K = 5;
+const ranges = a => { const r = []; a.sort((x, y) => x - y).forEach(n => { const l = r[r.length - 1]; if (l && n === l[1] + 1) l[1] = n; else r.push([n, n]); }); return r.map(x => x[0] === x[1] ? x[0] : x[0] + '-' + x[1]).join(', ') || 'none'; };
+
+function analyzeVideo(file, rate) {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = URL.createObjectURL(file);
+    v.style.cssText = 'position:fixed;top:0;left:0;width:160px;opacity:.01;pointer-events:none';
+    document.body.appendChild(v);
+    const cleanup = () => { v.remove(); URL.revokeObjectURL(v.src); };
+    if (!v.requestVideoFrameCallback) { cleanup(); return reject(new Error('This browser cannot read video frames precisely. Use Chrome, Edge or Safari.')); }
+
+    const byIdx = new Map();
+    let full, fctx, steps = 0, noCode = 0, lastT = null;
+    v.onerror = () => { cleanup(); reject(new Error('Video load failed.')); };
+    v.onended = () => {
+      logMsg(`Playback finished: ${steps} video frames read, ${noCode} without a readable barcode, ${v.currentTime.toFixed(1)}s long.`, 'info');
+      logMsg(`Frame indexes found in video: ${ranges([...byIdx.keys()])}`, 'info');
+      cleanup(); resolve([...byIdx.values()].map(({ frame_index, signatures }) => ({ frame_index, signatures })));
+    };
+    v.onloadedmetadata = () => {
+      full = Object.assign(document.createElement('canvas'), { width: v.videoWidth, height: v.videoHeight });
+      fctx = full.getContext('2d', { willReadFrequently: true });
+      logMsg(`Video ${v.videoWidth}x${v.videoHeight}, playing at ${rate}x.`, 'info');
+      v.playbackRate = rate;
+      v.requestVideoFrameCallback(step);
+      v.play().catch(e => { cleanup(); reject(e); });
+    };
+    function step() {
+      steps++;
+      const t = v.currentTime;
+      if (lastT !== null && t - lastT > 0.5) logMsg(`Playback jumped from ${lastT.toFixed(1)}s to ${t.toFixed(1)}s: frames were skipped.`, 'error');
+      lastT = t;
+      fctx.drawImage(v, 0, 0);
+      const idx = readIndex(fctx, full.width, full.height);
+      if (!idx) noCode++;
+      else {
+        let e = byIdx.get(idx);
+        if (!e) { e = { frame_index: idx, signatures: [] }; byIdx.set(idx, e); if (idx % 5 === 0) logMsg(`Frame ${idx} first seen at ${t.toFixed(1)}s`, 'info'); }
+        if (e.signatures.length < K) e.signatures.push(computeSignature(full));
+      }
+      if (!v.ended) v.requestVideoFrameCallback(step);
+    }
+  });
+}
+
+function resetStats() {
+  $('stat-total').innerText = '0'; $('stat-valid').innerText = '0'; $('stat-corrupt').innerText = '0'; $('stat-score').innerText = '0%';
+  $('result-box').style.display = 'none';
+}
+
+async function auditDriver() {
+  const driverId = $('driver-input').value.trim();
+  if (!driverId) return alert('Please enter a Driver ID.');
+  logBox.innerHTML = ''; resetStats();
+  logMsg(`Retrieving trusted cloud records for Driver ID: ${driverId}...`, 'info');
+  try {
+    const r = await fetch(`/api/audit/${encodeURIComponent(driverId)}`);
+    const data = await r.json();
+    if (!r.ok) { logMsg(data.detail || 'Audit failed.', 'error'); return; }
+    $('stat-total').innerText = data.total_frames;
+    logMsg(`Latest session ${data.session_id}: ${data.total_frames} trusted frame fingerprint(s) retrieved.`, 'success');
+  } catch (e) { logMsg(`Cloud Connection Error: ${e.message}`, 'error'); }
+}
+
+async function verifyVideo() {
+  const driverId = $('driver-input').value.trim(), files = $('video-file').files, btn = $('verify-btn');
+  if (!driverId) return alert('Please enter a Driver ID first.');
+  if (!files.length) return alert('Please select a video file.');
+  logBox.innerHTML = ''; resetStats();
+  logMsg(`Starting integrity verification for ${driverId}...`, 'info');
+  btn.disabled = true;
+  try {
+    logMsg('Playing video and reading frame barcodes...', 'info');
+    const frames = await analyzeVideo(files[0], parseFloat($('speed').value));
+    logMsg(`Read ${frames.length} distinct frame index(es) from the video. Comparing with the cloud...`, 'info');
+    const r = await fetch('/api/verify-video', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ driver_id: driverId, sensitivity: $('sensitivity').value, frames })
+    });
+    const data = await r.json();
+    if (!r.ok) { logMsg(data.detail || 'Verification failed.', 'error'); return; }
+
+    $('stat-total').innerText = data.total_expected;
+    $('stat-valid').innerText = data.matching_frames;
+    $('stat-corrupt').innerText = data.mismatched_frames + data.missing_frames + data.unexpected_frames;
+    $('stat-score').innerText = `${data.reliability_score}%`;
+    $('result-box').style.display = 'block';
+    $('result-box').className = `result-box ${data.is_valid ? 'result-pass' : 'result-fail'}`;
+    $('result-title').className = `result-title ${data.is_valid ? 'val-success' : 'val-danger'}`;
+    $('result-title').innerText = data.is_valid ? 'INTEGRITY VERIFICATION: PASS' : 'INTEGRITY VERIFICATION: FAILED';
+    $('result-summary').innerHTML = `Expected: <b>${data.total_expected}</b> &nbsp; In video: <b>${data.total_submitted}</b> &nbsp; Matching: <b>${data.matching_frames}</b> &nbsp; Altered: <b>${data.mismatched_frames}</b> &nbsp; Missing: <b>${data.missing_frames}</b> &nbsp; Unexpected: <b>${data.unexpected_frames}</b> &nbsp; Reliability: <b>${data.reliability_score}%</b><br>Blocks changed in passing frames (max): <b>${data.noise_floor}</b> &nbsp; Blocks changed in worst failing frame: <b>${data.worst_altered_cells}</b>`;
+
+    const problems = [...data.mismatches, ...data.missing, ...data.unexpected].sort((a, b) => a.frame_index - b.frame_index);
+    $('mismatch-table-container').innerHTML = problems.length
+      ? `<table><thead><tr><th>Frame</th><th>Status</th><th>Detail</th></tr></thead><tbody>${problems.slice(0, 50).map(p =>
+          `<tr><td>${escapeHtml(p.frame_index)}</td><td>${escapeHtml(p.status)}</td><td>${escapeHtml(p.detail)}</td></tr>`).join('')}</tbody></table>`
+      : '<p>Every frame in the video matches the trusted cloud fingerprints.</p>';
+    if (data.is_valid) logMsg(`Verification passed: ${data.matching_frames}/${data.total_expected} frames match.`, 'success');
+    else logMsg(`Verification FAILED: ${data.mismatched_frames} altered, ${data.missing_frames} missing, ${data.unexpected_frames} unexpected.`, 'error');
+  } catch (e) { logMsg(`Verification failed: ${e.message}`, 'error'); }
+  finally { btn.disabled = false; }
+}
+
+async function cleanupData() {
+  if (!confirm('Are you sure you want to permanently delete data older than 2 hours?')) return;
+  try {
+    const r = await fetch('/api/cleanup', { method: 'DELETE' });
+    logMsg((await r.json()).message, 'success');
+  } catch (e) { logMsg(`Purge Failed: ${e.message}`, 'error'); }
+}
+</script>
+</body>
+</html>

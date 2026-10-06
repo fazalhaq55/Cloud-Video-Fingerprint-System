@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashcam Encoder</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f0f2f5;color:#333;margin:0;padding:20px}
+.container{max-width:600px;margin:auto;background:#fff;padding:20px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.1)}
+.controls{display:flex;gap:10px;margin-bottom:15px}
+.btn{flex:1;padding:12px;font-size:1rem;border:none;border-radius:6px;cursor:pointer;color:#fff;font-weight:bold}
+.btn-green{background:#28a745}.btn-green:hover{background:#218838}
+.btn-red{background:#dc3545}.btn-red:hover{background:#c82333}
+.btn:disabled{background:#ccc;cursor:not-allowed}
+.stats-table{width:100%;border-collapse:collapse;margin-bottom:15px}
+.stats-table th,.stats-table td{padding:10px;border-bottom:1px solid #ddd;text-align:left}
+.stats-table th{color:#666;font-weight:normal}.stats-table td{font-weight:bold;text-align:right}
+input{width:100%;padding:10px;margin-bottom:15px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box}
+#log-box{background:#f8f9fa;border:1px solid #eee;padding:10px;height:120px;overflow-y:auto;font-family:monospace;font-size:.85rem;border-radius:6px;white-space:pre-wrap}
+.offline-text{color:orange}
+#main-canvas{width:100%;border-radius:8px;background:#000;margin-bottom:15px;aspect-ratio:16/9}
+#camera-feed{display:none}
+</style>
+</head>
+<body>
+<div class="container">
+  <h2 style="text-align:center;margin-top:0">🚗 Dashcam Encoder</h2>
+  <video id="camera-feed" autoplay playsinline muted></video>
+  <canvas id="main-canvas"></canvas>
+  <button id="enable-cam-btn" class="btn btn-green" style="width:100%;margin-bottom:15px" onclick="enableCamera()">1. Enable Camera</button>
+  <input type="text" id="driver-id" placeholder="Enter Driver ID (e.g., driver-57)">
+  <div class="controls">
+    <button id="start-btn" class="btn btn-green" onclick="startRecording()" disabled>Start Recording</button>
+    <button id="stop-btn" class="btn btn-red" onclick="stopRecording()" disabled>Stop & Download</button>
+  </div>
+  <table class="stats-table">
+    <tr><th>Frames Captured</th><td id="stat-frames">0</td></tr>
+    <tr><th>Fingerprints Sent (Cloud)</th><td id="stat-sent">0</td></tr>
+    <tr><th>Offline Queue (Pending)</th><td id="stat-offline" class="offline-text">0</td></tr>
+  </table>
+  <div id="log-box">Awaiting camera...</div>
+</div>
+
+<script>
+// ---- Fingerprint parameters: MUST be identical in the decoder ----
+const STRIP = 0.06;            // top strip (fraction of height) carrying the frame-index barcode
+const BITS = 24;               // 16-bit frame index + 8-bit CRC
+const GRID = 8, SW = 320, SH = 160;   // signature: 8x8 blocks measured on a 320x160 downscale
+const EXPIRY_MS = 2 * 3600 * 1000;    // queued data older than 2 h is discarded
+
+const video = document.getElementById('camera-feed');
+const canvas = document.getElementById('main-canvas');
+const ctx = canvas.getContext('2d');
+const logBox = document.getElementById('log-box');
+const small = Object.assign(document.createElement('canvas'), { width: SW, height: SH }).getContext('2d', { willReadFrequently: true });
+small.imageSmoothingQuality = 'high';
+
+let isRecording = false, sampling = false, syncInterval, mediaRecorder, recordedChunks = [];
+let sessionId = '', driverId = '', frameIndex = 0, activeIndex = 0, lastSample = -1e9, hashesSent = 0;
+let offlineQueue = JSON.parse(localStorage.getItem('offlineQueue')) || [];
+updateOfflineUI();
+
+function logMsg(m) { logBox.textContent = `> ${m}\n` + logBox.textContent; }
+function updateOfflineUI() { document.getElementById('stat-offline').innerText = offlineQueue.length; }
+function saveQueue() { localStorage.setItem('offlineQueue', JSON.stringify(offlineQueue)); updateOfflineUI(); }
+const hex2 = n => n.toString(16).padStart(2, '0');
+
+async function enableCamera() {
+  try {
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 1280, height: 720 } });
+    video.onloadedmetadata = () => { canvas.width = video.videoWidth; canvas.height = video.videoHeight; requestAnimationFrame(draw); };
+    document.getElementById('enable-cam-btn').style.display = 'none';
+    document.getElementById('start-btn').disabled = false;
+    logMsg('Camera enabled successfully.');
+  } catch (e) { logMsg(`Camera Error: ${e.message}`); }
+}
+
+function crc8(bytes) {
+  let c = 0;
+  for (const b of bytes) { c ^= b; for (let i = 0; i < 8; i++) c = (c & 0x80) ? ((c << 1) ^ 0x07) & 0xFF : (c << 1) & 0xFF; }
+  return c;
+}
+
+// Large black/white blocks (index + CRC) survive video compression far better than a 256-bit hash strip.
+function drawBarcode(index) {
+  const hi = (index >> 8) & 255, lo = index & 255;
+  const bits = [hi, lo, crc8([hi, lo])].map(b => b.toString(2).padStart(8, '0')).join('');
+  const bw = canvas.width / BITS, sh = Math.round(canvas.height * STRIP);
+  for (let i = 0; i < BITS; i++) {
+    ctx.fillStyle = bits[i] === '1' ? '#FFF' : '#000';
+    ctx.fillRect(Math.floor(i * bw), 0, Math.ceil(bw), sh);
+  }
+}
+
+// Perceptual signature: per 8x8 block, mean luminance + edge detail (mean gradient). Blur lowers detail;
+// covering or editing changes luminance. The barcode strip is excluded so signature = pure scene content.
+function computeSignature(src) {
+  const w = src.width, h = src.height, top = Math.round(h * STRIP);
+  small.drawImage(src, 0, top, w, h - top, 0, 0, SW, SH);
+  const d = small.getImageData(0, 0, SW, SH).data, Y = new Float32Array(SW * SH);
+  for (let i = 0; i < SW * SH; i++) Y[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  const cw = SW / GRID, ch = SH / GRID;
+  let out = '';
+  for (let gy = 0; gy < GRID; gy++) for (let gx = 0; gx < GRID; gx++) {
+    let s = 0, g = 0, n = 0;
+    for (let y = gy * ch; y < (gy + 1) * ch; y++) for (let x = gx * cw; x < (gx + 1) * cw; x++) {
+      const v = Y[y * SW + x]; s += v;
+      if (x < SW - 1 && y < SH - 1) { g += Math.abs(Y[y * SW + x + 1] - v) + Math.abs(Y[(y + 1) * SW + x] - v); n++; }
+    }
+    out += hex2(Math.round(s / (cw * ch))) + hex2(Math.min(255, Math.round(g / n * 8)));
+  }
+  return out;
+}
+
+async function sha256(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(hex2).join('');
+}
+
+// One loop draws the frame, samples it once per second and burns the new index into that SAME frame,
+// so the first video frame carrying index N is exactly the frame that was fingerprinted.
+function draw(now) {
+  if (video.readyState >= 2) {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (isRecording) {
+      if (sampling && now - lastSample >= 1000) {
+        lastSample = now;
+        frameIndex++; activeIndex = frameIndex;
+        document.getElementById('stat-frames').innerText = frameIndex;
+        fingerprintAndSend(frameIndex, computeSignature(canvas), new Date().toISOString());
+      }
+      drawBarcode(activeIndex);
+    }
+  }
+  requestAnimationFrame(draw);
+}
+
+async function fingerprintAndSend(index, signature, capturedAt) {
+  const fingerprint_hash = await sha256(`${driverId}|${sessionId}|${index}|${capturedAt}|${signature}`);
+  await transmit({ driver_id: driverId, session_id: sessionId, frame_index: index, captured_at: capturedAt, signature, fingerprint_hash });
+}
+
+const post = p => fetch('/api/transmit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
+
+async function transmit(p) {
+  try {
+    const r = await post(p);
+    if (r.ok) { hashesSent++; document.getElementById('stat-sent').innerText = hashesSent; logMsg(`[ONLINE] Frame ${p.frame_index} sent.`); }
+    else if (r.status >= 500) throw new Error('cloud unreachable');
+    else logMsg(`[REJECTED] Frame ${p.frame_index}: server refused it (${r.status}).`);
+  } catch (e) {
+    logMsg(`[OFFLINE] Queuing frame ${p.frame_index}.`);
+    offlineQueue.push(p); saveQueue();
+  }
+}
+
+// Flushes the whole queue (oldest first) until the network fails again; expired items are dropped.
+async function syncOfflineQueue() {
+  offlineQueue = offlineQueue.filter(p => Date.now() - Date.parse(p.captured_at) < EXPIRY_MS);
+  while (offlineQueue.length) {
+    try {
+      const r = await post(offlineQueue[0]);
+      if (r.status >= 500) break;
+      if (r.ok) { hashesSent++; document.getElementById('stat-sent').innerText = hashesSent; }
+      offlineQueue.shift();
+    } catch (e) { break; }
+  }
+  saveQueue();
+}
+
+function startRecording() {
+  driverId = document.getElementById('driver-id').value.trim();
+  if (!driverId) { alert('Please enter a Driver ID first.'); return; }
+  sessionId = 's' + Date.now().toString(36);
+  frameIndex = 0; activeIndex = 0; recordedChunks = [];
+  // Warm-up: first sample after ~2 s, so it is not taken from the recorder's unstable opening moments.
+  lastSample = performance.now() + 1000;
+  mediaRecorder = new MediaRecorder(canvas.captureStream(30), { mimeType: 'video/webm', videoBitsPerSecond: 5_000_000 });
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    const url = URL.createObjectURL(new Blob(recordedChunks, { type: 'video/webm' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: `dashcam_evidence_${driverId}_${sessionId}.webm` });
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    logMsg('Watermarked video downloaded.');
+  };
+  isRecording = true; sampling = true;
+  mediaRecorder.start();
+  syncInterval = setInterval(syncOfflineQueue, 3000);
+  document.getElementById('start-btn').disabled = true;
+  document.getElementById('stop-btn').disabled = false;
+  document.getElementById('driver-id').disabled = true;
+  logMsg(`Recording started for ${driverId} (session ${sessionId}).`);
+}
+
+function stopRecording() {
+  // Stop sampling now, but keep drawing the barcode for a moment so the last index really reaches the video file.
+  sampling = false;
+  document.getElementById('stop-btn').disabled = true;
+  logMsg('Stopping...');
+  setTimeout(() => {
+    isRecording = false;
+    clearInterval(syncInterval);
+    if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    syncOfflineQueue();
+    document.getElementById('start-btn').disabled = false;
+    document.getElementById('driver-id').disabled = false;
+    logMsg('Recording stopped.');
+  }, 700);
+}
+</script>
+</body>
+</html>

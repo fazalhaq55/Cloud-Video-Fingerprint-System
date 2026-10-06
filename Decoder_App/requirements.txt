@@ -1,0 +1,9 @@
+# Cloud-Based Video Fingerprint Collection System
+# Master of Software Engineering - Cloud Computing
+
+fastapi
+uvicorn[standard]
+python-dotenv
+supabase
+requests
+python-multipart

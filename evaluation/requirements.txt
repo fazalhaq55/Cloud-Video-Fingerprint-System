@@ -1,0 +1,9 @@
+numpy
+pandas
+scipy
+matplotlib
+opencv-python-headless
+Pillow
+PyWavelets
+imagehash
+ppdeep   # optional: needs a C++ compiler on some systems; evaluate.py skips TLSH if it is missing
